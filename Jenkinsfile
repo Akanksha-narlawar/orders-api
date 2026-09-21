@@ -332,7 +332,7 @@ pipeline {
             bat '''
             echo ===== CANDIDATE LOGS =====
 
-            "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER% > candidate-failure.log 2>&1
+            DOCKER_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
 
             if errorlevel 1 (
                 echo No candidate logs available.
