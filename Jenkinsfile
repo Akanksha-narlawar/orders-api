@@ -30,6 +30,7 @@ pipeline {
         APP_VERSION = "${params.VERSION}"
 
         PYTHON_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\Python\\Python311\\python.exe'
+        DOCKER_PATH = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
     }
 
     stages {
@@ -83,7 +84,7 @@ pipeline {
                 echo "Building image: %APP_NAME%:%APP_VERSION%"
 
                 bat '''
-                docker build --build-arg APP_VERSION=%APP_VERSION% -t %APP_NAME%:%APP_VERSION% .
+                "%DOCKER_PATH%" build --build-arg APP_VERSION=%APP_VERSION% -t %APP_NAME%:%APP_VERSION% .
 
                 if errorlevel 1 (
                     echo Docker build FAILED.
@@ -100,7 +101,7 @@ pipeline {
                 echo '=== IMAGE VALIDATION ==='
 
                 bat '''
-                docker image inspect %APP_NAME%:%APP_VERSION% >nul 2>&1
+                "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION% >nul 2>&1
 
                 if errorlevel 1 (
                     echo Docker image validation FAILED.
@@ -109,7 +110,7 @@ pipeline {
 
                 echo Docker image %APP_NAME%:%APP_VERSION% exists.
 
-                docker image inspect %APP_NAME%:%APP_VERSION% --format="{{.Id}}"
+                "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION% --format="{{.Id}}"
                 '''
             }
         }
@@ -121,9 +122,9 @@ pipeline {
                 echo "GREEN port: %CANDIDATE_PORT%"
 
                 bat '''
-                docker rm -f %CANDIDATE_CONTAINER% >nul 2>&1
+                "%DOCKER_PATH%" rm -f %CANDIDATE_CONTAINER% >nul 2>&1
 
-                docker run -d ^
+                "%DOCKER_PATH%" run -d ^
                 --name %CANDIDATE_CONTAINER% ^
                 --network %NETWORK% ^
                 -p %CANDIDATE_PORT%:%CONTAINER_PORT% ^
@@ -146,11 +147,11 @@ pipeline {
                 echo '=== CONTAINER VALIDATION ==='
 
                 bat '''
-                docker ps --filter "name=%CANDIDATE_CONTAINER%" --filter "status=running" | findstr %CANDIDATE_CONTAINER%
+                "%DOCKER_PATH%" ps --filter "name=%CANDIDATE_CONTAINER%" --filter "status=running" | findstr %CANDIDATE_CONTAINER%
 
                 if errorlevel 1 (
                     echo Candidate container is NOT running.
-                    docker ps -a --filter "name=%CANDIDATE_CONTAINER%"
+                    "%DOCKER_PATH%" ps -a --filter "name=%CANDIDATE_CONTAINER%"
                     exit /b 1
                 )
 
@@ -181,7 +182,7 @@ pipeline {
                 echo '=== DATABASE INTEGRATION CHECK ==='
 
                 bat '''
-                docker exec %CANDIDATE_CONTAINER% "%PYTHON_PATH%" -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
+                "%DOCKER_PATH%" exec %CANDIDATE_CONTAINER% "%PYTHON_PATH%" -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
 
                 if errorlevel 1 (
                     echo Database integration FAILED.
@@ -209,37 +210,37 @@ pipeline {
                 echo.
                 echo ===== CURRENT PRODUCTION =====
 
-                docker ps --filter "name=%PROD_CONTAINER%"
+                "%DOCKER_PATH%" ps --filter "name=%PROD_CONTAINER%"
 
                 echo.
                 echo ===== STOP OLD PRODUCTION =====
 
-                docker inspect %PROD_CONTAINER% >nul 2>&1
+                "%DOCKER_PATH%" inspect %PROD_CONTAINER% >nul 2>&1
 
                 if not errorlevel 1 (
                     echo Existing Jenkins production found.
-                    docker stop %PROD_CONTAINER%
-                    docker rm %PROD_CONTAINER%
+                    "%DOCKER_PATH%" stop %PROD_CONTAINER%
+                    "%DOCKER_PATH%" rm %PROD_CONTAINER%
                 )
 
-                docker inspect orders-blue-rollback >nul 2>&1
+                "%DOCKER_PATH%" inspect orders-blue-rollback >nul 2>&1
 
                 if not errorlevel 1 (
                     echo Existing manual production found.
-                    docker stop orders-blue-rollback
-                    docker rm orders-blue-rollback
+                    "%DOCKER_PATH%" stop orders-blue-rollback
+                    "%DOCKER_PATH%" rm orders-blue-rollback
                 )
 
                 echo.
                 echo ===== REMOVE TEMPORARY GREEN CONTAINER =====
 
-                docker stop %CANDIDATE_CONTAINER%
-                docker rm %CANDIDATE_CONTAINER%
+                "%DOCKER_PATH%" stop %CANDIDATE_CONTAINER%
+                "%DOCKER_PATH%" rm %CANDIDATE_CONTAINER%
 
                 echo.
                 echo ===== START NEW PRODUCTION =====
 
-                docker run -d ^
+                "%DOCKER_PATH%" run -d ^
                 --name %PROD_CONTAINER% ^
                 --network %NETWORK% ^
                 -p %PROD_PORT%:%CONTAINER_PORT% ^
@@ -291,15 +292,15 @@ pipeline {
                 bat '''
                 echo.
                 echo ===== PRODUCTION CONTAINER =====
-                docker ps --filter "name=%PROD_CONTAINER%"
+                "%DOCKER_PATH%" ps --filter "name=%PROD_CONTAINER%"
 
                 echo.
                 echo ===== DOCKER NETWORK =====
-                docker network inspect %NETWORK%
+                "%DOCKER_PATH%" network inspect %NETWORK%
 
                 echo.
                 echo ===== DATABASE =====
-                docker ps --filter "name=%DB_CONTAINER%"
+                "%DOCKER_PATH%" ps --filter "name=%DB_CONTAINER%"
                 '''
             }
         }
@@ -331,7 +332,7 @@ pipeline {
             bat '''
             echo ===== CANDIDATE LOGS =====
 
-            docker logs %CANDIDATE_CONTAINER% > candidate-failure.log 2>&1
+            "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER% > candidate-failure.log 2>&1
 
             if errorlevel 1 (
                 echo No candidate logs available.
@@ -340,7 +341,7 @@ pipeline {
             echo.
             echo ===== CANDIDATE CLEANUP =====
 
-            docker rm -f %CANDIDATE_CONTAINER% >nul 2>&1
+            "%DOCKER_PATH%" rm -f %CANDIDATE_CONTAINER% >nul 2>&1
 
             echo Candidate cleanup completed.
             '''
