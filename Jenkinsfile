@@ -24,15 +24,12 @@ pipeline {
         PROD_CONTAINER = 'orders-prod-jenkins'
 
         CANDIDATE_PORT = '8085'
-        PROD_PORT = '8082'
+        PROD_PORT = '8087'
         CONTAINER_PORT = '5000'
 
         APP_VERSION = "${params.VERSION}"
 
-        // Python on Jenkins Windows host
         PYTHON_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\Python\\Python311\\python.exe'
-
-        // Docker on Jenkins Windows host
         DOCKER_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
     }
 
@@ -40,378 +37,279 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                echo '=== CHECKOUT ==='
+                echo "========== CHECKOUT =========="
 
                 checkout scm
 
                 bat '''
-                echo ===== GIT COMMIT =====
-                git rev-parse HEAD
-
-                echo.
-                echo ===== GIT BRANCH =====
-                git branch --show-current
-
-                echo.
-                echo ===== GIT STATUS =====
-                git status
+                    "%DOCKER_PATH%" --version
+                    git rev-parse HEAD
+                    git status
                 '''
             }
         }
 
         stage('Validate Version') {
             steps {
-                echo '=== VALIDATE VERSION ==='
-                echo "Requested version: ${env.APP_VERSION}"
+                echo "========== VALIDATE VERSION =========="
 
                 bat '''
-                powershell -NoProfile -Command "if ('%APP_VERSION%' -notmatch '^[0-9]+\\.[0-9]+$') { Write-Host 'Invalid version format'; exit 1 }"
+                    echo Application Version: %APP_VERSION%
 
-                if errorlevel 1 (
-                    echo Version validation FAILED.
-                    exit /b 1
-                )
+                    if "%APP_VERSION%"=="" (
+                        echo ERROR: VERSION parameter is empty
+                        exit /b 1
+                    )
 
-                echo Version %APP_VERSION% is valid.
+                    echo Version validation successful.
                 '''
             }
         }
 
         stage('Unit/Application Test') {
             steps {
-                echo '=== APPLICATION TEST ==='
+                echo "========== UNIT / APPLICATION TEST =========="
 
                 bat '''
-                echo ===== PYTHON SYNTAX CHECK =====
+                    "%PYTHON_PATH%" -m py_compile app.py
 
-                "%PYTHON_PATH%" -m py_compile app.py
+                    if errorlevel 1 (
+                        echo ERROR: Python compilation failed
+                        exit /b 1
+                    )
 
-                if errorlevel 1 (
-                    echo Application syntax test FAILED.
-                    exit /b 1
-                )
-
-                echo Application syntax test PASSED.
+                    echo Python application test successful.
                 '''
             }
         }
 
         stage('Docker Build') {
             steps {
-                echo '=== DOCKER BUILD ==='
-                echo "Building image: %APP_NAME%:%APP_VERSION%"
+                echo "========== DOCKER BUILD =========="
 
                 bat '''
-                "%DOCKER_PATH%" build ^
-                --build-arg APP_VERSION=%APP_VERSION% ^
-                -t %APP_NAME%:%APP_VERSION% .
+                    "%DOCKER_PATH%" build ^
+                        --build-arg APP_VERSION=%APP_VERSION% ^
+                        -t %APP_NAME%:%APP_VERSION% .
 
-                if errorlevel 1 (
-                    echo Docker build FAILED.
-                    exit /b 1
-                )
+                    if errorlevel 1 (
+                        echo ERROR: Docker image build failed
+                        exit /b 1
+                    )
 
-                echo Docker build PASSED.
+                    echo Docker image build successful.
                 '''
             }
         }
 
         stage('Docker Image Validation') {
             steps {
-                echo '=== IMAGE VALIDATION ==='
+                echo "========== DOCKER IMAGE VALIDATION =========="
 
                 bat '''
-                "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION% >nul 2>&1
+                    "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION%
 
-                if errorlevel 1 (
-                    echo Docker image validation FAILED.
-                    exit /b 1
-                )
+                    if errorlevel 1 (
+                        echo ERROR: Docker image does not exist
+                        exit /b 1
+                    )
 
-                echo Docker image %APP_NAME%:%APP_VERSION% exists.
-
-                echo.
-                echo ===== IMAGE ID =====
-                "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION% --format="{{.Id}}"
-
-                echo.
-                echo ===== IMAGE CREATED =====
-                "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION% --format="{{.Created}}"
+                    echo Docker image validation successful.
                 '''
             }
         }
 
         stage('Start Candidate') {
             steps {
-                echo '=== START GREEN CANDIDATE ==='
-                echo "GREEN container: ${env.CANDIDATE_CONTAINER}"
-                echo "GREEN port: ${env.CANDIDATE_PORT}"
+                echo "========== START CANDIDATE =========="
 
                 bat '''
-                echo ===== REMOVE OLD GREEN CANDIDATE =====
+                    echo Removing old candidate container if present...
 
-                "%DOCKER_PATH%" rm -f %CANDIDATE_CONTAINER% >nul 2>&1
+                    "%DOCKER_PATH%" rm -f %CANDIDATE_CONTAINER% 2>NUL
 
-                echo.
-                echo ===== VERIFY NETWORK =====
+                    echo Checking Docker network...
 
-                "%DOCKER_PATH%" network inspect %NETWORK% >nul 2>&1
+                    "%DOCKER_PATH%" network inspect %NETWORK%
 
-                if errorlevel 1 (
-                    echo Docker network %NETWORK% does not exist.
-                    exit /b 1
-                )
+                    if errorlevel 1 (
+                        echo ERROR: Docker network %NETWORK% does not exist
+                        exit /b 1
+                    )
 
-                echo Network %NETWORK% exists.
+                    echo Starting candidate container...
 
-                echo.
-                echo ===== START GREEN CANDIDATE =====
+                    "%DOCKER_PATH%" run -d ^
+                        --name %CANDIDATE_CONTAINER% ^
+                        --network %NETWORK% ^
+                        -p %CANDIDATE_PORT%:%CONTAINER_PORT% ^
+                        -e APP_VERSION=%APP_VERSION% ^
+                        -e ENVIRONMENT=PRODUCTION ^
+                        %APP_NAME%:%APP_VERSION%
 
-                "%DOCKER_PATH%" run -d ^
-                --name %CANDIDATE_CONTAINER% ^
-                --network %NETWORK% ^
-                -p %CANDIDATE_PORT%:%CONTAINER_PORT% ^
-                -e APP_VERSION=%APP_VERSION% ^
-                -e ENVIRONMENT=PRODUCTION ^
-                %APP_NAME%:%APP_VERSION%
+                    if errorlevel 1 (
+                        echo ERROR: Candidate container failed to start
+                        exit /b 1
+                    )
 
-                if errorlevel 1 (
-                    echo Failed to start GREEN candidate.
-                    exit /b 1
-                )
-
-                echo GREEN candidate started successfully.
+                    echo Candidate container started successfully.
                 '''
             }
         }
 
         stage('Container Validation') {
             steps {
-                echo '=== CONTAINER VALIDATION ==='
+                echo "========== CONTAINER VALIDATION =========="
 
                 bat '''
-                echo ===== CONTAINER STATUS =====
-
-                "%DOCKER_PATH%" ps ^
-                --filter "name=%CANDIDATE_CONTAINER%" ^
-                --filter "status=running" | findstr %CANDIDATE_CONTAINER%
-
-                if errorlevel 1 (
-                    echo Candidate container is NOT running.
-
-                    echo.
-                    echo ===== CANDIDATE STATUS =====
                     "%DOCKER_PATH%" ps -a --filter "name=%CANDIDATE_CONTAINER%"
 
-                    echo.
-                    echo ===== CANDIDATE LOGS =====
-                    "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER%
+                    "%DOCKER_PATH%" inspect %CANDIDATE_CONTAINER%
 
-                    exit /b 1
-                )
+                    if errorlevel 1 (
+                        echo ERROR: Candidate container validation failed
+                        exit /b 1
+                    )
 
-                echo Candidate container is RUNNING.
-
-                echo.
-                echo ===== PORT MAPPING =====
-                "%DOCKER_PATH%" port %CANDIDATE_CONTAINER%
+                    echo Candidate container validation successful.
                 '''
             }
         }
 
         stage('Application Health Check') {
             steps {
-                echo '=== APPLICATION HEALTH CHECK ==='
+                echo "========== APPLICATION HEALTH CHECK =========="
 
                 bat '''
-                echo Checking:
-                echo http://localhost:%CANDIDATE_PORT%/health
+                    echo Waiting for application...
 
-                curl.exe --fail --silent --show-error ^
-                http://localhost:%CANDIDATE_PORT%/health
+                    timeout /t 5 /nobreak
 
-                if errorlevel 1 (
-                    echo.
-                    echo Candidate health check FAILED.
+                    echo Checking application health...
 
-                    echo.
-                    echo ===== CANDIDATE LOGS =====
-                    "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER%
+                    curl.exe --fail --silent --show-error ^
+                        http://localhost:%CANDIDATE_PORT%/health
 
-                    exit /b 1
-                )
+                    if errorlevel 1 (
+                        echo ERROR: Candidate health check failed
+                        exit /b 1
+                    )
 
-                echo.
-                echo Candidate health check PASSED.
+                    echo Candidate health check successful.
                 '''
             }
         }
 
         stage('Integration Check') {
             steps {
-                echo '=== DATABASE INTEGRATION CHECK ==='
+                echo "========== DATABASE INTEGRATION CHECK =========="
 
                 bat '''
-                echo ===== DATABASE CONTAINER =====
+                    echo Checking Docker network...
 
-                "%DOCKER_PATH%" ps ^
-                --filter "name=%DB_CONTAINER%"
+                    "%DOCKER_PATH%" network inspect %NETWORK%
 
-                echo.
-                echo ===== DATABASE NETWORK =====
+                    echo Checking database connectivity from candidate...
 
-                "%DOCKER_PATH%" inspect %DB_CONTAINER% ^
-                --format="{{json .NetworkSettings.Networks}}"
+                    "%DOCKER_PATH%" exec %CANDIDATE_CONTAINER% ^
+                    python -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
 
-                echo.
-                echo ===== TEST DATABASE CONNECTION FROM GREEN =====
+                    if errorlevel 1 (
+                        echo ERROR: Database integration check failed
+                        exit /b 1
+                    )
 
-                "%DOCKER_PATH%" exec %CANDIDATE_CONTAINER% ^
-                python -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
-
-                if errorlevel 1 (
-                    echo.
-                    echo Database integration FAILED.
-
-                    echo.
-                    echo ===== GREEN CONTAINER NETWORK =====
-                    "%DOCKER_PATH%" inspect %CANDIDATE_CONTAINER% ^
-                    --format="{{json .NetworkSettings.Networks}}"
-
-                    echo.
-                    echo ===== DATABASE CONTAINER STATUS =====
-                    "%DOCKER_PATH%" ps -a --filter "name=%DB_CONTAINER%"
-
-                    echo.
-                    echo ===== DATABASE LOGS =====
-                    "%DOCKER_PATH%" logs --tail 50 %DB_CONTAINER%
-
-                    exit /b 1
-                )
-
-                echo.
-                echo Database integration PASSED.
+                    echo Database integration check successful.
                 '''
             }
         }
 
         stage('Traffic Switch') {
             steps {
-                echo '=== TRAFFIC SWITCH ==='
+                echo "========== TRAFFIC SWITCH =========="
 
                 bat '''
-                echo ===== CURRENT PRODUCTION =====
+                    echo Current Docker containers:
 
-                "%DOCKER_PATH%" ps ^
-                --filter "name=%PROD_CONTAINER%"
+                    "%DOCKER_PATH%" ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"
 
-                echo.
-                echo ===== STOP OLD PRODUCTION =====
+                    echo.
+                    echo Current production port:
+                    echo %PROD_PORT%
 
-                "%DOCKER_PATH%" stop %PROD_CONTAINER% >nul 2>&1
-                "%DOCKER_PATH%" rm %PROD_CONTAINER% >nul 2>&1
+                    echo.
+                    echo Stopping existing production container if present...
 
-                echo Old production removed.
+                    "%DOCKER_PATH%" rm -f %PROD_CONTAINER% 2>NUL
 
-                echo.
-                echo ===== REMOVE GREEN CONTAINER =====
+                    echo.
+                    echo Starting new production container...
 
-                "%DOCKER_PATH%" stop %CANDIDATE_CONTAINER% >nul 2>&1
-                "%DOCKER_PATH%" rm %CANDIDATE_CONTAINER% >nul 2>&1
+                    "%DOCKER_PATH%" run -d ^
+                        --name %PROD_CONTAINER% ^
+                        --network %NETWORK% ^
+                        -p %PROD_PORT%:%CONTAINER_PORT% ^
+                        -e APP_VERSION=%APP_VERSION% ^
+                        -e ENVIRONMENT=PRODUCTION ^
+                        %APP_NAME%:%APP_VERSION%
 
-                echo Green candidate removed.
+                    if errorlevel 1 (
+                        echo ERROR: Traffic switch failed
+                        exit /b 1
+                    )
 
-                echo.
-                echo ===== START NEW PRODUCTION =====
-
-                "%DOCKER_PATH%" run -d ^
-                --name %PROD_CONTAINER% ^
-                --network %NETWORK% ^
-                -p %PROD_PORT%:%CONTAINER_PORT% ^
-                -e APP_VERSION=%APP_VERSION% ^
-                -e ENVIRONMENT=PRODUCTION ^
-                %APP_NAME%:%APP_VERSION%
-
-                if errorlevel 1 (
-                    echo Production container failed to start.
-                    exit /b 1
-                )
-
-                echo New production container started.
+                    echo Traffic switch successful.
                 '''
             }
         }
 
         stage('Deployment Verification') {
             steps {
-                echo '=== DEPLOYMENT VERIFICATION ==='
+                echo "========== DEPLOYMENT VERIFICATION =========="
 
                 bat '''
-                echo ===== PRODUCTION CONTAINER =====
+                    echo Waiting for production application...
 
-                "%DOCKER_PATH%" ps ^
-                --filter "name=%PROD_CONTAINER%" ^
-                --filter "status=running" | findstr %PROD_CONTAINER%
+                    timeout /t 5 /nobreak
 
-                if errorlevel 1 (
-                    echo Production container is NOT running.
+                    echo Checking production health...
 
-                    echo.
-                    echo ===== PRODUCTION STATUS =====
-                    "%DOCKER_PATH%" ps -a --filter "name=%PROD_CONTAINER%"
+                    curl.exe --fail --silent --show-error ^
+                        http://localhost:%PROD_PORT%/health
 
-                    echo.
-                    echo ===== PRODUCTION LOGS =====
-                    "%DOCKER_PATH%" logs %PROD_CONTAINER%
-
-                    exit /b 1
-                )
-
-                echo Production container is RUNNING.
-
-                echo.
-                echo ===== PRODUCTION HEALTH =====
-
-                curl.exe --fail --silent --show-error ^
-                http://localhost:%PROD_PORT%/health
-
-                if errorlevel 1 (
-                    echo Production health check FAILED.
+                    if errorlevel 1 (
+                        echo ERROR: Production health check failed
+                        exit /b 1
+                    )
 
                     echo.
-                    echo ===== PRODUCTION LOGS =====
-                    "%DOCKER_PATH%" logs %PROD_CONTAINER%
+                    echo Checking production container...
 
-                    exit /b 1
-                )
+                    "%DOCKER_PATH%" ps --filter "name=%PROD_CONTAINER%"
 
-                echo.
-                echo Production deployment verification PASSED.
+                    echo.
+                    echo Deployment verification successful.
                 '''
             }
         }
 
         stage('Production Container Status') {
             steps {
-                echo '=== PRODUCTION CONTAINER STATUS ==='
+                echo "========== PRODUCTION CONTAINER STATUS =========="
 
                 bat '''
-                echo ===== DOCKER PS =====
-                "%DOCKER_PATH%" ps
+                    "%DOCKER_PATH%" ps -a --filter "name=%PROD_CONTAINER%"
 
-                echo.
-                echo ===== PRODUCTION PORT =====
-                "%DOCKER_PATH%" port %PROD_CONTAINER%
+                    echo.
+                    echo Production port:
 
-                echo.
-                echo ===== PRODUCTION IMAGE =====
-                "%DOCKER_PATH%" inspect %PROD_CONTAINER% ^
-                --format="{{.Config.Image}}"
+                    netstat -ano | findstr :%PROD_PORT%
 
-                echo.
-                echo ===== PRODUCTION VERSION =====
-                "%DOCKER_PATH%" inspect %PROD_CONTAINER% ^
-                --format="{{range .Config.Env}}{{println .}}{{end}}" | findstr APP_VERSION
+                    echo.
+                    echo Production health:
+
+                    curl.exe --fail --silent --show-error ^
+                        http://localhost:%PROD_PORT%/health
                 '''
             }
         }
@@ -420,42 +318,49 @@ pipeline {
     post {
 
         success {
-            echo '======================================'
-            echo 'DEPLOYMENT SUCCESSFUL'
-            echo '======================================'
-            echo "Application: ${env.APP_NAME}"
-            echo "Version: ${env.APP_VERSION}"
-            echo "Production container: ${env.PROD_CONTAINER}"
-            echo "Production port: ${env.PROD_PORT}"
+            echo "========================================"
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "Application : %APP_NAME%"
+            echo "Version     : %APP_VERSION%"
+            echo "Port        : %PROD_PORT%"
+            echo "========================================"
         }
 
         failure {
-            echo '======================================'
-            echo 'DEPLOYMENT FAILED'
-            echo '======================================'
+            echo "========================================"
+            echo "DEPLOYMENT FAILED"
+            echo "Application : %APP_NAME%"
+            echo "Version     : %APP_VERSION%"
+            echo "========================================"
 
             bat '''
-            echo ===== CANDIDATE STATUS =====
-            "%DOCKER_PATH%" ps -a --filter "name=%CANDIDATE_CONTAINER%"
+                echo.
+                echo ===== ALL CONTAINERS =====
 
-            echo.
-            echo ===== CANDIDATE LOGS =====
-            "%DOCKER_PATH%" logs --tail 100 %CANDIDATE_CONTAINER% 2>nul
+                "%DOCKER_PATH%" ps -a
 
-            echo.
-            echo ===== PRODUCTION STATUS =====
-            "%DOCKER_PATH%" ps -a --filter "name=%PROD_CONTAINER%"
+                echo.
+                echo ===== CANDIDATE LOGS =====
+
+                "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER% 2>NUL
+
+                echo.
+                echo ===== PRODUCTION LOGS =====
+
+                "%DOCKER_PATH%" logs %PROD_CONTAINER% 2>NUL
+
+                echo.
+                echo ===== NETWORK =====
+
+                "%DOCKER_PATH%" network inspect %NETWORK%
             '''
         }
 
         always {
-            echo '======================================'
-            echo 'FINAL DOCKER STATUS'
-            echo '======================================'
+            echo "Pipeline execution completed."
 
-            bat '''
-            "%DOCKER_PATH%" ps -a
-            '''
+            archiveArtifacts artifacts: 'candidate-failure.log',
+                             allowEmptyArchive: true
         }
     }
 }
