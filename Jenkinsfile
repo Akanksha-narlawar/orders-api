@@ -30,7 +30,7 @@ pipeline {
         APP_VERSION = "${params.VERSION}"
 
         PYTHON_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\Python\\Python311\\python.exe'
-        DOCKER_PATH = 'C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe'
+        DOCKER_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
     }
 
     stages {
@@ -332,7 +332,7 @@ pipeline {
             bat '''
             echo ===== CANDIDATE LOGS =====
 
-            DOCKER_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+            "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER% > candidate-failure.log 2>&1
 
             if errorlevel 1 (
                 echo No candidate logs available.
