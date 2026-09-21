@@ -28,6 +28,8 @@ pipeline {
         CONTAINER_PORT = '5000'
 
         APP_VERSION = "${params.VERSION}"
+
+        PYTHON_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\Python\\Python311\\python.exe'
     }
 
     stages {
@@ -47,6 +49,12 @@ pipeline {
 
                 bat '''
                 powershell -NoProfile -Command "if ('%APP_VERSION%' -notmatch '^[0-9]+\\.[0-9]+$') { Write-Host 'Invalid version format'; exit 1 }"
+
+                if errorlevel 1 (
+                    echo Version validation FAILED.
+                    exit /b 1
+                )
+
                 echo Version %APP_VERSION% is valid.
                 '''
             }
@@ -57,7 +65,13 @@ pipeline {
                 echo '=== APPLICATION TEST ==='
 
                 bat '''
-                python -m py_compile app.py
+                "%PYTHON_PATH%" -m py_compile app.py
+
+                if errorlevel 1 (
+                    echo Application syntax test FAILED.
+                    exit /b 1
+                )
+
                 echo Application syntax test PASSED.
                 '''
             }
@@ -66,9 +80,17 @@ pipeline {
         stage('Docker Build') {
             steps {
                 echo '=== DOCKER BUILD ==='
+                echo "Building image: %APP_NAME%:%APP_VERSION%"
 
                 bat '''
                 docker build --build-arg APP_VERSION=%APP_VERSION% -t %APP_NAME%:%APP_VERSION% .
+
+                if errorlevel 1 (
+                    echo Docker build FAILED.
+                    exit /b 1
+                )
+
+                echo Docker build PASSED.
                 '''
             }
         }
@@ -79,9 +101,14 @@ pipeline {
 
                 bat '''
                 docker image inspect %APP_NAME%:%APP_VERSION% >nul 2>&1
-                if errorlevel 1 exit /b 1
+
+                if errorlevel 1 (
+                    echo Docker image validation FAILED.
+                    exit /b 1
+                )
 
                 echo Docker image %APP_NAME%:%APP_VERSION% exists.
+
                 docker image inspect %APP_NAME%:%APP_VERSION% --format="{{.Id}}"
                 '''
             }
@@ -94,7 +121,7 @@ pipeline {
                 echo "GREEN port: %CANDIDATE_PORT%"
 
                 bat '''
-                docker rm -f %CANDIDATE_CONTAINER% >nul 2>&1 || exit /b 0
+                docker rm -f %CANDIDATE_CONTAINER% >nul 2>&1
 
                 docker run -d ^
                 --name %CANDIDATE_CONTAINER% ^
@@ -103,6 +130,13 @@ pipeline {
                 -e APP_VERSION=%APP_VERSION% ^
                 -e ENVIRONMENT=PRODUCTION ^
                 %APP_NAME%:%APP_VERSION%
+
+                if errorlevel 1 (
+                    echo Failed to start GREEN candidate.
+                    exit /b 1
+                )
+
+                echo GREEN candidate started successfully.
                 '''
             }
         }
@@ -116,6 +150,7 @@ pipeline {
 
                 if errorlevel 1 (
                     echo Candidate container is NOT running.
+                    docker ps -a --filter "name=%CANDIDATE_CONTAINER%"
                     exit /b 1
                 )
 
@@ -146,7 +181,7 @@ pipeline {
                 echo '=== DATABASE INTEGRATION CHECK ==='
 
                 bat '''
-                docker exec %CANDIDATE_CONTAINER% python -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
+                docker exec %CANDIDATE_CONTAINER% "%PYTHON_PATH%" -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
 
                 if errorlevel 1 (
                     echo Database integration FAILED.
@@ -168,33 +203,41 @@ pipeline {
             steps {
                 echo '=== TRAFFIC SWITCH ==='
                 echo 'GREEN candidate passed all validation.'
-                echo 'Switching production traffic from current version to candidate.'
+                echo 'Switching production to validated version.'
 
                 bat '''
-                echo Checking current production container...
+                echo.
+                echo ===== CURRENT PRODUCTION =====
+
+                docker ps --filter "name=%PROD_CONTAINER%"
+
+                echo.
+                echo ===== STOP OLD PRODUCTION =====
 
                 docker inspect %PROD_CONTAINER% >nul 2>&1
 
                 if not errorlevel 1 (
-                    echo Current Jenkins production container found.
-                    docker stop %PROD_CONTAINER% >nul 2>&1
-                    docker rm %PROD_CONTAINER% >nul 2>&1
+                    echo Existing Jenkins production found.
+                    docker stop %PROD_CONTAINER%
+                    docker rm %PROD_CONTAINER%
                 )
 
                 docker inspect orders-blue-rollback >nul 2>&1
 
                 if not errorlevel 1 (
-                    echo Existing manual production container found.
-                    docker stop orders-blue-rollback >nul 2>&1
-                    docker rm orders-blue-rollback >nul 2>&1
+                    echo Existing manual production found.
+                    docker stop orders-blue-rollback
+                    docker rm orders-blue-rollback
                 )
 
-                echo Removing candidate temporary port mapping...
+                echo.
+                echo ===== REMOVE TEMPORARY GREEN CONTAINER =====
 
-                docker stop %CANDIDATE_CONTAINER% >nul 2>&1
-                docker rm %CANDIDATE_CONTAINER% >nul 2>&1
+                docker stop %CANDIDATE_CONTAINER%
+                docker rm %CANDIDATE_CONTAINER%
 
-                echo Starting validated version on production port %PROD_PORT%...
+                echo.
+                echo ===== START NEW PRODUCTION =====
 
                 docker run -d ^
                 --name %PROD_CONTAINER% ^
@@ -204,7 +247,15 @@ pipeline {
                 -e ENVIRONMENT=PRODUCTION ^
                 %APP_NAME%:%APP_VERSION%
 
-                echo Production container started.
+                if errorlevel 1 (
+                    echo Production container failed to start.
+                    exit /b 1
+                )
+
+                echo.
+                echo Production traffic switched successfully.
+                echo Active version: %APP_VERSION%
+                echo Production port: %PROD_PORT%
                 '''
             }
         }
@@ -217,15 +268,17 @@ pipeline {
                 curl.exe --fail --silent --show-error http://localhost:%PROD_PORT%/health
 
                 if errorlevel 1 (
-                    echo Production verification FAILED.
+                    echo Production health verification FAILED.
                     exit /b 1
                 )
 
-                echo Production verification PASSED.
+                echo Production health verification PASSED.
 
                 echo.
                 echo ===== CURRENT PRODUCTION =====
+
                 curl.exe http://localhost:%PROD_PORT%/
+
                 echo.
                 '''
             }
@@ -236,11 +289,17 @@ pipeline {
                 echo '=== PRODUCTION CONTAINER STATUS ==='
 
                 bat '''
+                echo.
+                echo ===== PRODUCTION CONTAINER =====
                 docker ps --filter "name=%PROD_CONTAINER%"
 
                 echo.
-                echo ===== NETWORK =====
+                echo ===== DOCKER NETWORK =====
                 docker network inspect %NETWORK%
+
+                echo.
+                echo ===== DATABASE =====
+                docker ps --filter "name=%DB_CONTAINER%"
                 '''
             }
         }
@@ -257,6 +316,7 @@ pipeline {
             echo "Action: ${params.ACTION}"
             echo "Git Commit: ${env.GIT_COMMIT}"
             echo 'Production Port: 8082'
+            echo '=============================================='
         }
 
         failure {
@@ -265,14 +325,24 @@ pipeline {
             echo '=============================================='
             echo "Version: ${env.APP_VERSION}"
             echo "Action: ${params.ACTION}"
-            echo 'Current production was not intentionally changed before candidate validation.'
+            echo 'Candidate will be cleaned up.'
+            echo '=============================================='
 
             bat '''
             echo ===== CANDIDATE LOGS =====
-            docker logs %CANDIDATE_CONTAINER% > candidate-failure.log 2>&1 || echo No candidate logs available.
 
+            docker logs %CANDIDATE_CONTAINER% > candidate-failure.log 2>&1
+
+            if errorlevel 1 (
+                echo No candidate logs available.
+            )
+
+            echo.
             echo ===== CANDIDATE CLEANUP =====
-            docker rm -f %CANDIDATE_CONTAINER% >nul 2>&1 || exit /b 0
+
+            docker rm -f %CANDIDATE_CONTAINER% >nul 2>&1
+
+            echo Candidate cleanup completed.
             '''
         }
 
