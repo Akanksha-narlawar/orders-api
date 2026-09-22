@@ -5,7 +5,7 @@ pipeline {
         string(
             name: 'VERSION',
             defaultValue: '7.9',
-            description: 'Application version to deploy or rollback'
+            description: 'Application version to deploy'
         )
 
         choice(
@@ -17,6 +17,10 @@ pipeline {
 
     environment {
         APP_NAME = 'orders-api'
+
+        DOCKER_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+        PYTHON_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\Python\\Python311\\python.exe'
+
         NETWORK = 'orders-network'
         DB_CONTAINER = 'orders-db'
 
@@ -25,19 +29,16 @@ pipeline {
 
         BLUE_PORT = '8091'
         GREEN_PORT = '8092'
-        CONTAINER_PORT = '5000'
 
-        APP_VERSION = "${params.VERSION}"
-
-        PYTHON_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\Python\\Python311\\python.exe'
-        DOCKER_PATH = 'C:\\Users\\akank\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
-
-        CURRENT_CONTAINER = ''
-        CANDIDATE_CONTAINER = ''
-        CURRENT_PORT = ''
-        CANDIDATE_PORT = ''
         CURRENT_COLOR = ''
+        CURRENT_CONTAINER = ''
+        CURRENT_PORT = ''
+
         CANDIDATE_COLOR = ''
+        CANDIDATE_CONTAINER = ''
+        CANDIDATE_PORT = ''
+
+        GIT_SHA = ''
     }
 
     stages {
@@ -48,11 +49,19 @@ pipeline {
 
                 checkout scm
 
-                bat '''
-                    "%DOCKER_PATH%" --version
-                    git rev-parse HEAD
+                script {
+                    env.GIT_SHA = bat(
+                        script: '@echo off && git rev-parse HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    echo "Git SHA: ${env.GIT_SHA}"
+                }
+
+                bat """
+                    "${env.DOCKER_PATH}" --version
                     git status
-                '''
+                """
             }
         }
 
@@ -60,16 +69,16 @@ pipeline {
             steps {
                 echo '========== VALIDATE VERSION =========='
 
-                bat '''
-                    echo Application Version: %APP_VERSION%
+                bat """
+                    echo Application Version: %VERSION%
 
-                    if "%APP_VERSION%"=="" (
+                    if "%VERSION%" == "" (
                         echo ERROR: VERSION parameter is empty
                         exit /b 1
                     )
 
                     echo Version validation successful.
-                '''
+                """
             }
         }
 
@@ -77,8 +86,8 @@ pipeline {
             steps {
                 echo '========== UNIT / APPLICATION TEST =========='
 
-                bat '''
-                    "%PYTHON_PATH%" -m py_compile app.py
+                bat """
+                    "${env.PYTHON_PATH}" -m py_compile app.py
 
                     if errorlevel 1 (
                         echo ERROR: Python compilation failed
@@ -86,7 +95,7 @@ pipeline {
                     )
 
                     echo Python application test successful.
-                '''
+                """
             }
         }
 
@@ -100,10 +109,10 @@ pipeline {
             steps {
                 echo '========== DOCKER BUILD =========='
 
-                bat '''
-                    "%DOCKER_PATH%" build ^
-                        --build-arg APP_VERSION=%APP_VERSION% ^
-                        -t %APP_NAME%:%APP_VERSION% .
+                bat """
+                    "${env.DOCKER_PATH}" build ^
+                        --build-arg APP_VERSION=%VERSION% ^
+                        -t %APP_NAME%:%VERSION% .
 
                     if errorlevel 1 (
                         echo ERROR: Docker image build failed
@@ -111,7 +120,7 @@ pipeline {
                     )
 
                     echo Docker image build successful.
-                '''
+                """
             }
         }
 
@@ -119,32 +128,63 @@ pipeline {
             steps {
                 echo '========== DOCKER IMAGE VALIDATION =========='
 
-                bat '''
-                    "%DOCKER_PATH%" image inspect %APP_NAME%:%APP_VERSION%
+                bat """
+                    "${env.DOCKER_PATH}" image inspect %APP_NAME%:%VERSION%
 
                     if errorlevel 1 (
-                        echo ERROR: Docker image %APP_NAME%:%APP_VERSION% does not exist
+                        echo ERROR: Docker image %APP_NAME%:%VERSION% does not exist
                         exit /b 1
                     )
 
                     echo Docker image validation successful.
-                '''
+                """
             }
         }
 
         stage('Determine Blue-Green Slots') {
             steps {
                 script {
+                    echo '========== DETERMINE BLUE-GREEN SLOTS =========='
 
-                    def blueRunning = bat(
-                        script: "\"${env.DOCKER_PATH}\" inspect -f \"{{.State.Running}}\" ${env.BLUE_CONTAINER}",
-                        returnStdout: true
-                    ).trim() == 'true'
+                    /*
+                     * IMPORTANT:
+                     * A missing Docker container is NOT a pipeline failure.
+                     * It simply means that slot is currently unused.
+                     */
 
-                    def greenRunning = bat(
-                        script: "\"${env.DOCKER_PATH}\" inspect -f \"{{.State.Running}}\" ${env.GREEN_CONTAINER}",
-                        returnStdout: true
-                    ).trim() == 'true'
+                    def blueStatus = bat(
+                        script: """
+                            @echo off
+                            "${env.DOCKER_PATH}" inspect -f "{{.State.Running}}" ${env.BLUE_CONTAINER} >NUL 2>&1
+
+                            if errorlevel 1 (
+                                exit /b 2
+                            )
+
+                            exit /b 0
+                        """,
+                        returnStatus: true
+                    )
+
+                    def greenStatus = bat(
+                        script: """
+                            @echo off
+                            "${env.DOCKER_PATH}" inspect -f "{{.State.Running}}" ${env.GREEN_CONTAINER} >NUL 2>&1
+
+                            if errorlevel 1 (
+                                exit /b 2
+                            )
+
+                            exit /b 0
+                        """,
+                        returnStatus: true
+                    )
+
+                    echo "BLUE inspect status  : ${blueStatus}"
+                    echo "GREEN inspect status : ${greenStatus}"
+
+                    def blueRunning = (blueStatus == 0)
+                    def greenRunning = (greenStatus == 0)
 
                     echo "BLUE running  : ${blueRunning}"
                     echo "GREEN running : ${greenRunning}"
@@ -152,97 +192,77 @@ pipeline {
                     if (blueRunning && !greenRunning) {
 
                         env.CURRENT_COLOR = 'BLUE'
-                        env.CANDIDATE_COLOR = 'GREEN'
-
                         env.CURRENT_CONTAINER = env.BLUE_CONTAINER
-                        env.CANDIDATE_CONTAINER = env.GREEN_CONTAINER
-
                         env.CURRENT_PORT = env.BLUE_PORT
+
+                        env.CANDIDATE_COLOR = 'GREEN'
+                        env.CANDIDATE_CONTAINER = env.GREEN_CONTAINER
                         env.CANDIDATE_PORT = env.GREEN_PORT
 
-                    } else if (!blueRunning && greenRunning) {
+                    } else if (greenRunning && !blueRunning) {
 
                         env.CURRENT_COLOR = 'GREEN'
-                        env.CANDIDATE_COLOR = 'BLUE'
-
                         env.CURRENT_CONTAINER = env.GREEN_CONTAINER
-                        env.CANDIDATE_CONTAINER = env.BLUE_CONTAINER
-
                         env.CURRENT_PORT = env.GREEN_PORT
+
+                        env.CANDIDATE_COLOR = 'BLUE'
+                        env.CANDIDATE_CONTAINER = env.BLUE_CONTAINER
                         env.CANDIDATE_PORT = env.BLUE_PORT
+
+                    } else if (!blueRunning && !greenRunning) {
+
+                        error('No active BLUE or GREEN container found. Deployment stopped safely.')
 
                     } else {
 
-                        error(
-                            'SAFE DEPLOYMENT STOPPED: Exactly one of BLUE or GREEN must be running.'
-                        )
+                        error('Both BLUE and GREEN containers are running. Deployment stopped safely.')
                     }
 
-                    echo '========== BLUE-GREEN CONFIGURATION =========='
-                    echo "Current Color       : ${env.CURRENT_COLOR}"
-                    echo "Current Container   : ${env.CURRENT_CONTAINER}"
-                    echo "Current Port        : ${env.CURRENT_PORT}"
-                    echo "Candidate Color     : ${env.CANDIDATE_COLOR}"
-                    echo "Candidate Container : ${env.CANDIDATE_CONTAINER}"
-                    echo "Candidate Port      : ${env.CANDIDATE_PORT}"
+                    echo '----------------------------------------'
+                    echo "Current Color      : ${env.CURRENT_COLOR}"
+                    echo "Current Container  : ${env.CURRENT_CONTAINER}"
+                    echo "Current Port       : ${env.CURRENT_PORT}"
+                    echo "Candidate Color    : ${env.CANDIDATE_COLOR}"
+                    echo "Candidate Container: ${env.CANDIDATE_CONTAINER}"
+                    echo "Candidate Port     : ${env.CANDIDATE_PORT}"
+                    echo '----------------------------------------'
                 }
             }
         }
 
         stage('Start Candidate') {
             steps {
-                echo '========== START CANDIDATE =========='
+                script {
+                    echo '========== START CANDIDATE =========='
 
-                bat '''
-                    echo ========================================
-                    echo CURRENT PRODUCTION
-                    echo ========================================
-                    echo Color     : %CURRENT_COLOR%
-                    echo Container : %CURRENT_CONTAINER%
-                    echo Port      : %CURRENT_PORT%
+                    echo "Starting ${env.CANDIDATE_COLOR}"
+                    echo "Container: ${env.CANDIDATE_CONTAINER}"
+                    echo "Port: ${env.CANDIDATE_PORT}"
+                    echo "Version: ${params.VERSION}"
 
-                    echo.
-                    echo ========================================
-                    echo CANDIDATE
-                    echo ========================================
-                    echo Color     : %CANDIDATE_COLOR%
-                    echo Container : %CANDIDATE_CONTAINER%
-                    echo Port      : %CANDIDATE_PORT%
+                    bat """
+                        "${env.DOCKER_PATH}" rm -f ${env.CANDIDATE_CONTAINER} 2>NUL || exit /b 0
 
-                    echo.
-                    echo Checking Docker network...
+                        "${env.DOCKER_PATH}" run -d ^
+                            --name ${env.CANDIDATE_CONTAINER} ^
+                            --network ${env.NETWORK} ^
+                            -p ${env.CANDIDATE_PORT}:5000 ^
+                            -e APP_VERSION=%VERSION% ^
+                            -e ENVIRONMENT=PRODUCTION ^
+                            %APP_NAME%:%VERSION%
 
-                    "%DOCKER_PATH%" network inspect %NETWORK%
+                        if errorlevel 1 (
+                            echo ERROR: Candidate container failed to start
+                            exit /b 1
+                        )
 
-                    if errorlevel 1 (
-                        echo ERROR: Docker network %NETWORK% does not exist
-                        exit /b 1
-                    )
+                        echo Candidate container started successfully.
+                    """
 
-                    echo.
-                    echo Removing old stopped candidate if present...
-
-                    "%DOCKER_PATH%" rm -f %CANDIDATE_CONTAINER% 2>NUL
-
-                    echo.
-                    echo Starting candidate...
-
-                    "%DOCKER_PATH%" run -d ^
-                        --name %CANDIDATE_CONTAINER% ^
-                        --network %NETWORK% ^
-                        -p %CANDIDATE_PORT%:%CONTAINER_PORT% ^
-                        -e APP_VERSION=%APP_VERSION% ^
-                        -e ENVIRONMENT=PRODUCTION ^
-                        %APP_NAME%:%APP_VERSION%
-
-                    if errorlevel 1 (
-                        echo ERROR: Candidate container failed to start
-                        exit /b 1
-                    )
-
-                    echo.
-                    echo Candidate started successfully.
-                '''
+                    bat """
+                        powershell -Command "Start-Sleep -Seconds 5"
+                    """
+                }
             }
         }
 
@@ -250,27 +270,23 @@ pipeline {
             steps {
                 echo '========== CONTAINER VALIDATION =========='
 
-                bat '''
-                    echo Candidate container:
-
-                    "%DOCKER_PATH%" ps -a ^
-                        --filter "name=%CANDIDATE_CONTAINER%" ^
-                        --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
-
-                    echo.
-                    echo Candidate running state:
-
-                    "%DOCKER_PATH%" inspect ^
-                        -f "{{.State.Status}}" ^
-                        %CANDIDATE_CONTAINER%
+                bat """
+                    "${env.DOCKER_PATH}" inspect ${env.CANDIDATE_CONTAINER}
 
                     if errorlevel 1 (
-                        echo ERROR: Candidate container validation failed
+                        echo ERROR: Candidate container does not exist
+                        exit /b 1
+                    )
+
+                    "${env.DOCKER_PATH}" inspect -f "{{.State.Running}}" ${env.CANDIDATE_CONTAINER}
+
+                    if errorlevel 1 (
+                        echo ERROR: Candidate container is not running
                         exit /b 1
                     )
 
                     echo Candidate container validation successful.
-                '''
+                """
             }
         }
 
@@ -278,24 +294,9 @@ pipeline {
             steps {
                 echo '========== APPLICATION HEALTH CHECK =========='
 
-                bat '''
-                    echo Waiting for candidate application...
-
-                    powershell -NoProfile -Command "Start-Sleep -Seconds 5"
-
-                    echo Checking candidate health...
-
-                    curl.exe --fail --silent --show-error ^
-                        http://localhost:%CANDIDATE_PORT%/health
-
-                    if errorlevel 1 (
-                        echo ERROR: Candidate health check failed
-                        exit /b 1
-                    )
-
-                    echo.
-                    echo Candidate health check successful.
-                '''
+                bat """
+                    powershell -Command "try { \$r=Invoke-WebRequest -Uri 'http://localhost:%CANDIDATE_PORT%/health' -UseBasicParsing -TimeoutSec 10; Write-Host \$r.Content; if (\$r.StatusCode -ne 200) { exit 1 } } catch { Write-Host 'ERROR: Health check failed'; exit 1 }"
+                """
             }
         }
 
@@ -303,20 +304,9 @@ pipeline {
             steps {
                 echo '========== APPLICATION VERSION CHECK =========='
 
-                bat '''
-                    echo Checking candidate application version...
-
-                    curl.exe --fail --silent --show-error ^
-                        http://localhost:%CANDIDATE_PORT%/
-
-                    if errorlevel 1 (
-                        echo ERROR: Candidate application check failed
-                        exit /b 1
-                    )
-
-                    echo.
-                    echo Candidate application check successful.
-                '''
+                bat """
+                    powershell -Command "try { \$r=Invoke-WebRequest -Uri 'http://localhost:%CANDIDATE_PORT%/' -UseBasicParsing -TimeoutSec 10; Write-Host \$r.Content; if (\$r.Content -notmatch '\"version\":\"%VERSION%\"') { Write-Host 'ERROR: Application version mismatch'; exit 1 } } catch { Write-Host 'ERROR: Version check failed'; exit 1 }"
+                """
             }
         }
 
@@ -324,82 +314,48 @@ pipeline {
             steps {
                 echo '========== DATABASE INTEGRATION CHECK =========='
 
-                bat '''
-                    echo Checking Docker network...
-
-                    "%DOCKER_PATH%" network inspect %NETWORK%
+                bat """
+                    "${env.DOCKER_PATH}" exec ${env.CANDIDATE_CONTAINER} python -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
 
                     if errorlevel 1 (
-                        echo ERROR: Docker network validation failed
+                        echo ERROR: Database connectivity failed
                         exit /b 1
                     )
 
-                    echo.
-                    echo Checking database connectivity from candidate...
-
-                    "%DOCKER_PATH%" exec %CANDIDATE_CONTAINER% ^
-                        python -c "import socket; s=socket.create_connection(('orders-db',3306),5); print('DATABASE CONNECTION SUCCESS'); s.close()"
-
-                    if errorlevel 1 (
-                        echo ERROR: Database integration check failed
-                        exit /b 1
-                    )
-
-                    echo.
                     echo Database integration check successful.
-                '''
+                """
             }
         }
 
         stage('Traffic Switch') {
             steps {
-                echo '========== TRAFFIC SWITCH =========='
+                script {
+                    echo '========== TRAFFIC SWITCH =========='
 
-                bat '''
-                    echo ========================================
-                    echo BLUE-GREEN TRAFFIC SWITCH
-                    echo ========================================
+                    echo "Current production : ${env.CURRENT_COLOR}"
+                    echo "Candidate           : ${env.CANDIDATE_COLOR}"
 
-                    echo Current production:
-                    echo Color     : %CURRENT_COLOR%
-                    echo Container : %CURRENT_CONTAINER%
-                    echo Port      : %CURRENT_PORT%
+                    echo "Candidate passed all validations."
+                    echo "Switching active production to ${env.CANDIDATE_COLOR}."
 
-                    echo.
-                    echo Candidate:
-                    echo Color     : %CANDIDATE_COLOR%
-                    echo Container : %CANDIDATE_CONTAINER%
-                    echo Port      : %CANDIDATE_PORT%
+                    bat """
+                        "${env.DOCKER_PATH}" stop ${env.CURRENT_CONTAINER}
 
-                    echo.
-                    echo Candidate passed:
-                    echo - Container validation
-                    echo - Health check
-                    echo - Application check
-                    echo - Database integration check
+                        if errorlevel 1 (
+                            echo ERROR: Failed to stop current production container
+                            exit /b 1
+                        )
 
-                    echo.
-                    echo Candidate is now the validated production slot.
+                        "${env.DOCKER_PATH}" rm ${env.CURRENT_CONTAINER}
 
-                    echo.
-                    echo Removing previous production container:
-                    echo %CURRENT_CONTAINER%
+                        if errorlevel 1 (
+                            echo ERROR: Failed to remove previous production container
+                            exit /b 1
+                        )
 
-                    "%DOCKER_PATH%" rm -f %CURRENT_CONTAINER%
-
-                    if errorlevel 1 (
-                        echo ERROR: Previous production cleanup failed
-                        exit /b 1
-                    )
-
-                    echo.
-                    echo ========================================
-                    echo TRAFFIC SWITCH COMPLETED
-                    echo ========================================
-                    echo Active Color     : %CANDIDATE_COLOR%
-                    echo Active Container : %CANDIDATE_CONTAINER%
-                    echo Active Port      : %CANDIDATE_PORT%
-                '''
+                        echo Traffic switch completed successfully.
+                    """
+                }
             }
         }
 
@@ -407,32 +363,9 @@ pipeline {
             steps {
                 echo '========== DEPLOYMENT VERIFICATION =========='
 
-                bat '''
-                    echo Waiting for active production...
-
-                    powershell -NoProfile -Command "Start-Sleep -Seconds 5"
-
-                    echo.
-                    echo Checking active production health...
-
-                    curl.exe --fail --silent --show-error ^
-                        http://localhost:%CANDIDATE_PORT%/health
-
-                    if errorlevel 1 (
-                        echo ERROR: Active production health check failed
-                        exit /b 1
-                    )
-
-                    echo.
-                    echo Active production container:
-
-                    "%DOCKER_PATH%" ps ^
-                        --filter "name=%CANDIDATE_CONTAINER%" ^
-                        --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
-
-                    echo.
-                    echo Deployment verification successful.
-                '''
+                bat """
+                    powershell -Command "try { \$r=Invoke-WebRequest -Uri 'http://localhost:%CANDIDATE_PORT%/' -UseBasicParsing -TimeoutSec 10; Write-Host 'ACTIVE APPLICATION:'; Write-Host \$r.Content; if (\$r.StatusCode -ne 200) { exit 1 } } catch { Write-Host 'ERROR: Deployment verification failed'; exit 1 }"
+                """
             }
         }
 
@@ -440,33 +373,16 @@ pipeline {
             steps {
                 echo '========== PRODUCTION CONTAINER STATUS =========='
 
-                bat '''
-                    echo Active production container:
-                    echo %CANDIDATE_CONTAINER%
+                bat """
+                    "${env.DOCKER_PATH}" ps --filter "name=%CANDIDATE_CONTAINER%"
 
                     echo.
-                    "%DOCKER_PATH%" ps -a ^
-                        --filter "name=%CANDIDATE_CONTAINER%"
-
-                    echo.
-                    echo Active production color:
-                    echo %CANDIDATE_COLOR%
-
-                    echo.
-                    echo Active production port:
-                    echo %CANDIDATE_PORT%
-
-                    echo.
-                    echo Port status:
-
-                    netstat -ano | findstr :%CANDIDATE_PORT%
-
-                    echo.
-                    echo Final health:
-
-                    curl.exe --fail --silent --show-error ^
-                        http://localhost:%CANDIDATE_PORT%/health
-                '''
+                    echo Active Production:
+                    echo Color: %CANDIDATE_COLOR%
+                    echo Container: %CANDIDATE_CONTAINER%
+                    echo Port: %CANDIDATE_PORT%
+                    echo Version: %VERSION%
+                """
             }
         }
     }
@@ -476,43 +392,53 @@ pipeline {
         success {
             echo '========================================'
             echo 'BLUE-GREEN DEPLOYMENT SUCCESSFUL'
-            echo "Application : ${env.APP_NAME}"
-            echo "Version     : ${env.APP_VERSION}"
-            echo "Active Color: ${env.CANDIDATE_COLOR}"
-            echo "Active Port : ${env.CANDIDATE_PORT}"
             echo '========================================'
+
+            echo "Application : ${env.APP_NAME}"
+            echo "Version     : ${params.VERSION}"
+            echo "Git SHA     : ${env.GIT_SHA}"
+            echo "Active Color: ${env.CANDIDATE_COLOR}"
+            echo "Container   : ${env.CANDIDATE_CONTAINER}"
+            echo "Port        : ${env.CANDIDATE_PORT}"
+
+            bat """
+                echo.
+                echo ===== FINAL CONTAINERS =====
+                "${env.DOCKER_PATH}" ps -a --filter "name=orders"
+
+                echo.
+                echo ===== NETWORK =====
+                "${env.DOCKER_PATH}" network inspect ${env.NETWORK}
+            """
         }
 
         failure {
             echo '========================================'
             echo 'BLUE-GREEN DEPLOYMENT FAILED'
-            echo "Application : ${env.APP_NAME}"
-            echo "Version     : ${env.APP_VERSION}"
-            echo "Current     : ${env.CURRENT_CONTAINER}"
-            echo "Candidate   : ${env.CANDIDATE_CONTAINER}"
             echo '========================================'
 
-            bat '''
+            echo "Application : ${env.APP_NAME}"
+            echo "Version     : ${params.VERSION}"
+            echo "Current     : ${env.CURRENT_CONTAINER}"
+            echo "Candidate   : ${env.CANDIDATE_CONTAINER}"
+
+            bat """
                 echo.
-                echo ===== ALL CONTAINERS =====
-
-                "%DOCKER_PATH%" ps -a
-
-                echo.
-                echo ===== CANDIDATE LOGS =====
-
-                "%DOCKER_PATH%" logs %CANDIDATE_CONTAINER% 2>NUL
-
-                echo.
-                echo ===== CURRENT PRODUCTION LOGS =====
-
-                "%DOCKER_PATH%" logs %CURRENT_CONTAINER% 2>NUL
+                echo ===== ALL ORDERS CONTAINERS =====
+                "${env.DOCKER_PATH}" ps -a --filter "name=orders"
 
                 echo.
                 echo ===== NETWORK =====
+                "${env.DOCKER_PATH}" network inspect ${env.NETWORK}
 
-                "%DOCKER_PATH%" network inspect %NETWORK%
-            '''
+                echo.
+                echo ===== CANDIDATE LOGS =====
+                "${env.DOCKER_PATH}" logs ${env.CANDIDATE_CONTAINER} 2>NUL
+
+                echo.
+                echo ===== CURRENT PRODUCTION LOGS =====
+                "${env.DOCKER_PATH}" logs ${env.CURRENT_CONTAINER} 2>NUL
+            """
         }
 
         always {
