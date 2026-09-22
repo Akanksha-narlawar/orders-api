@@ -314,22 +314,15 @@ pipeline {
                 echo '========== APPLICATION HEALTH CHECK =========='
 
                 bat """
-                    powershell -Command "try {
-                        \$r=Invoke-WebRequest -Uri 'http://localhost:%CANDIDATE_PORT%/health' -UseBasicParsing -TimeoutSec 10;
-                        Write-Host \$r.Content;
+                    curl.exe --fail --silent --show-error --max-time 10 http://localhost:%CANDIDATE_PORT%/health
 
-                        if (\$r.StatusCode -ne 200) {
-                            Write-Host 'ERROR: Health check returned non-200';
-                            exit 1
-                        }
+                    if errorlevel 1 (
+                        echo ERROR: Application health check failed
+                        exit /b 1
+                    )
 
-                        Write-Host 'Application health check successful.'
-                    }
-                    catch {
-                        Write-Host 'ERROR: Health check failed';
-                        Write-Host \$_.Exception.Message;
-                        exit 1
-                    }"
+                    echo.
+                    echo Application health check successful.
                 """
             }
         }
@@ -340,28 +333,7 @@ pipeline {
                 echo '========== APPLICATION VERSION CHECK =========='
 
                 bat """
-                    powershell -Command "try {
-                        \$r=Invoke-WebRequest -Uri 'http://localhost:%CANDIDATE_PORT%/' -UseBasicParsing -TimeoutSec 10;
-
-                        Write-Host 'APPLICATION RESPONSE:';
-                        Write-Host \$r.Content;
-
-                        \$json=\$r.Content | ConvertFrom-Json;
-
-                        if (\$json.version -ne '%VERSION%') {
-                            Write-Host 'ERROR: Application version mismatch';
-                            Write-Host ('Expected: %VERSION%');
-                            Write-Host ('Actual: ' + \$json.version);
-                            exit 1
-                        }
-
-                        Write-Host 'Application version validation successful.'
-                    }
-                    catch {
-                        Write-Host 'ERROR: Version check failed';
-                        Write-Host \$_.Exception.Message;
-                        exit 1
-                    }"
+                    powershell -NoProfile -Command "\$response=Invoke-RestMethod -Uri 'http://localhost:%CANDIDATE_PORT%/' -TimeoutSec 10; Write-Host 'APPLICATION RESPONSE:'; Write-Host (\$response | ConvertTo-Json -Compress); Write-Host ('Expected Version: %VERSION%'); Write-Host ('Actual Version: ' + \$response.version); if (\$response.version -ne '%VERSION%') { Write-Host 'ERROR: Application version mismatch'; exit 1 }; Write-Host 'Application version validation successful.'"
                 """
             }
         }
@@ -426,26 +398,7 @@ pipeline {
                 echo '========== DEPLOYMENT VERIFICATION =========='
 
                 bat """
-                    powershell -Command "try {
-                        \$r=Invoke-WebRequest -Uri 'http://localhost:%CANDIDATE_PORT%/' -UseBasicParsing -TimeoutSec 10;
-
-                        Write-Host 'PRODUCTION RESPONSE:';
-                        Write-Host \$r.Content;
-
-                        \$json=\$r.Content | ConvertFrom-Json;
-
-                        if (\$json.version -ne '%VERSION%') {
-                            Write-Host 'ERROR: Production version verification failed';
-                            exit 1
-                        }
-
-                        Write-Host 'Production deployment verification successful.'
-                    }
-                    catch {
-                        Write-Host 'ERROR: Production verification failed';
-                        Write-Host \$_.Exception.Message;
-                        exit 1
-                    }"
+                    powershell -NoProfile -Command "\$response=Invoke-RestMethod -Uri 'http://localhost:%CANDIDATE_PORT%/' -TimeoutSec 10; Write-Host 'PRODUCTION RESPONSE:'; Write-Host (\$response | ConvertTo-Json -Compress); Write-Host ('Expected Version: %VERSION%'); Write-Host ('Actual Version: ' + \$response.version); if (\$response.version -ne '%VERSION%') { Write-Host 'ERROR: Production version verification failed'; exit 1 }; Write-Host 'Production deployment verification successful.'"
                 """
             }
         }
@@ -503,7 +456,18 @@ pipeline {
 
             script {
 
+                /*
+                 * Capture candidate logs BEFORE removing the candidate.
+                 * This prevents the post-action itself from failing.
+                 */
                 if (env.CANDIDATE_CONTAINER?.trim()) {
+
+                    bat """
+                        echo.
+                        echo ===== CANDIDATE LOGS BEFORE CLEANUP =====
+
+                        "${DOCKER}" logs ${CANDIDATE_CONTAINER} 2>NUL
+                    """
 
                     bat """
                         echo.
@@ -524,15 +488,6 @@ pipeline {
                     echo ===== NETWORK =====
                     "${DOCKER}" network inspect ${NETWORK}
                 """
-
-                if (env.CANDIDATE_CONTAINER?.trim()) {
-
-                    bat """
-                        echo.
-                        echo ===== CANDIDATE LOGS =====
-                        "${DOCKER}" logs ${CANDIDATE_CONTAINER} 2>NUL
-                    """
-                }
 
                 if (env.CURRENT_CONTAINER?.trim()) {
 
