@@ -29,16 +29,6 @@ pipeline {
 
         BLUE_PORT = '8091'
         GREEN_PORT = '8092'
-
-        CURRENT_COLOR = ''
-        CURRENT_CONTAINER = ''
-        CURRENT_PORT = ''
-
-        CANDIDATE_COLOR = ''
-        CANDIDATE_CONTAINER = ''
-        CANDIDATE_PORT = ''
-
-        GIT_SHA = ''
     }
 
     stages {
@@ -50,12 +40,12 @@ pipeline {
                 checkout scm
 
                 script {
-                    env.GIT_SHA = bat(
-                        script: '@echo off && git rev-parse HEAD',
+                    def gitSha = bat(
+                        script: 'git rev-parse HEAD',
                         returnStdout: true
                     ).trim()
 
-                    echo "Git SHA: ${env.GIT_SHA}"
+                    echo "Git SHA: ${gitSha}"
                 }
 
                 bat """
@@ -146,12 +136,6 @@ pipeline {
                 script {
                     echo '========== DETERMINE BLUE-GREEN SLOTS =========='
 
-                    /*
-                     * IMPORTANT:
-                     * A missing Docker container is NOT a pipeline failure.
-                     * It simply means that slot is currently unused.
-                     */
-
                     def blueStatus = bat(
                         script: """
                             @echo off
@@ -180,14 +164,13 @@ pipeline {
                         returnStatus: true
                     )
 
-                    echo "BLUE inspect status  : ${blueStatus}"
-                    echo "GREEN inspect status : ${greenStatus}"
-
                     def blueRunning = (blueStatus == 0)
                     def greenRunning = (greenStatus == 0)
 
-                    echo "BLUE running  : ${blueRunning}"
-                    echo "GREEN running : ${greenRunning}"
+                    echo "BLUE inspect status  : ${blueStatus}"
+                    echo "GREEN inspect status : ${greenStatus}"
+                    echo "BLUE running         : ${blueRunning}"
+                    echo "GREEN running        : ${greenRunning}"
 
                     if (blueRunning && !greenRunning) {
 
@@ -219,12 +202,12 @@ pipeline {
                     }
 
                     echo '----------------------------------------'
-                    echo "Current Color      : ${env.CURRENT_COLOR}"
-                    echo "Current Container  : ${env.CURRENT_CONTAINER}"
-                    echo "Current Port       : ${env.CURRENT_PORT}"
-                    echo "Candidate Color    : ${env.CANDIDATE_COLOR}"
-                    echo "Candidate Container: ${env.CANDIDATE_CONTAINER}"
-                    echo "Candidate Port     : ${env.CANDIDATE_PORT}"
+                    echo "Current Color       : ${env.CURRENT_COLOR}"
+                    echo "Current Container   : ${env.CURRENT_CONTAINER}"
+                    echo "Current Port        : ${env.CURRENT_PORT}"
+                    echo "Candidate Color     : ${env.CANDIDATE_COLOR}"
+                    echo "Candidate Container : ${env.CANDIDATE_CONTAINER}"
+                    echo "Candidate Port      : ${env.CANDIDATE_PORT}"
                     echo '----------------------------------------'
                 }
             }
@@ -235,14 +218,17 @@ pipeline {
                 script {
                     echo '========== START CANDIDATE =========='
 
-                    echo "Starting ${env.CANDIDATE_COLOR}"
-                    echo "Container: ${env.CANDIDATE_CONTAINER}"
-                    echo "Port: ${env.CANDIDATE_PORT}"
-                    echo "Version: ${params.VERSION}"
+                    echo "Starting       : ${env.CANDIDATE_COLOR}"
+                    echo "Container      : ${env.CANDIDATE_CONTAINER}"
+                    echo "Port           : ${env.CANDIDATE_PORT}"
+                    echo "Version        : ${params.VERSION}"
 
                     bat """
-                        "${env.DOCKER_PATH}" rm -f ${env.CANDIDATE_CONTAINER} 2>NUL || exit /b 0
+                        "${env.DOCKER_PATH}" rm -f ${env.CANDIDATE_CONTAINER} 2>NUL
+                        exit /b 0
+                    """
 
+                    bat """
                         "${env.DOCKER_PATH}" run -d ^
                             --name ${env.CANDIDATE_CONTAINER} ^
                             --network ${env.NETWORK} ^
@@ -333,7 +319,7 @@ pipeline {
                     echo '========== TRAFFIC SWITCH =========='
 
                     echo "Current production : ${env.CURRENT_COLOR}"
-                    echo "Candidate           : ${env.CANDIDATE_COLOR}"
+                    echo "Candidate          : ${env.CANDIDATE_COLOR}"
 
                     echo "Candidate passed all validations."
                     echo "Switching active production to ${env.CANDIDATE_COLOR}."
@@ -377,7 +363,7 @@ pipeline {
                     "${env.DOCKER_PATH}" ps --filter "name=%CANDIDATE_CONTAINER%"
 
                     echo.
-                    echo Active Production:
+                    echo ===== ACTIVE PRODUCTION =====
                     echo Color: %CANDIDATE_COLOR%
                     echo Container: %CANDIDATE_CONTAINER%
                     echo Port: %CANDIDATE_PORT%
@@ -396,7 +382,6 @@ pipeline {
 
             echo "Application : ${env.APP_NAME}"
             echo "Version     : ${params.VERSION}"
-            echo "Git SHA     : ${env.GIT_SHA}"
             echo "Active Color: ${env.CANDIDATE_COLOR}"
             echo "Container   : ${env.CANDIDATE_CONTAINER}"
             echo "Port        : ${env.CANDIDATE_PORT}"
@@ -419,8 +404,6 @@ pipeline {
 
             echo "Application : ${env.APP_NAME}"
             echo "Version     : ${params.VERSION}"
-            echo "Current     : ${env.CURRENT_CONTAINER}"
-            echo "Candidate   : ${env.CANDIDATE_CONTAINER}"
 
             bat """
                 echo.
@@ -430,15 +413,25 @@ pipeline {
                 echo.
                 echo ===== NETWORK =====
                 "${env.DOCKER_PATH}" network inspect ${env.NETWORK}
-
-                echo.
-                echo ===== CANDIDATE LOGS =====
-                "${env.DOCKER_PATH}" logs ${env.CANDIDATE_CONTAINER} 2>NUL
-
-                echo.
-                echo ===== CURRENT PRODUCTION LOGS =====
-                "${env.DOCKER_PATH}" logs ${env.CURRENT_CONTAINER} 2>NUL
             """
+
+            script {
+                if (env.CANDIDATE_CONTAINER?.trim()) {
+                    bat """
+                        echo.
+                        echo ===== CANDIDATE LOGS =====
+                        "${env.DOCKER_PATH}" logs ${env.CANDIDATE_CONTAINER} 2>NUL
+                    """
+                }
+
+                if (env.CURRENT_CONTAINER?.trim()) {
+                    bat """
+                        echo.
+                        echo ===== CURRENT PRODUCTION LOGS =====
+                        "${env.DOCKER_PATH}" logs ${env.CURRENT_CONTAINER} 2>NUL
+                    """
+                }
+            }
         }
 
         always {
