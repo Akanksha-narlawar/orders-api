@@ -138,13 +138,13 @@ pipeline {
 
                     def blueRunning = bat(
                         script: "\"${env.DOCKER_PATH}\" inspect -f \"{{.State.Running}}\" ${env.BLUE_CONTAINER}",
-                        returnStatus: true
-                    ) == 0
+                        returnStdout: true
+                    ).trim() == 'true'
 
                     def greenRunning = bat(
                         script: "\"${env.DOCKER_PATH}\" inspect -f \"{{.State.Running}}\" ${env.GREEN_CONTAINER}",
-                        returnStatus: true
-                    ) == 0
+                        returnStdout: true
+                    ).trim() == 'true'
 
                     echo "BLUE running  : ${blueRunning}"
                     echo "GREEN running : ${greenRunning}"
@@ -179,12 +179,12 @@ pipeline {
                     }
 
                     echo '========== BLUE-GREEN CONFIGURATION =========='
-                    echo "Current Color    : ${env.CURRENT_COLOR}"
-                    echo "Current Container: ${env.CURRENT_CONTAINER}"
-                    echo "Current Port     : ${env.CURRENT_PORT}"
-                    echo "Candidate Color  : ${env.CANDIDATE_COLOR}"
-                    echo "Candidate Container: ${env.CANDIDATE_CONTAINER}"
-                    echo "Candidate Port   : ${env.CANDIDATE_PORT}"
+                    echo "Current Color       : ${env.CURRENT_COLOR}"
+                    echo "Current Container   : ${env.CURRENT_CONTAINER}"
+                    echo "Current Port        : ${env.CURRENT_PORT}"
+                    echo "Candidate Color     : ${env.CANDIDATE_COLOR}"
+                    echo "Candidate Container : ${env.CANDIDATE_CONTAINER}"
+                    echo "Candidate Port      : ${env.CANDIDATE_PORT}"
                 }
             }
         }
@@ -194,12 +194,20 @@ pipeline {
                 echo '========== START CANDIDATE =========='
 
                 bat '''
-                    echo Current production:
-                    echo %CURRENT_COLOR% - %CURRENT_CONTAINER% - port %CURRENT_PORT%
+                    echo ========================================
+                    echo CURRENT PRODUCTION
+                    echo ========================================
+                    echo Color     : %CURRENT_COLOR%
+                    echo Container : %CURRENT_CONTAINER%
+                    echo Port      : %CURRENT_PORT%
 
                     echo.
-                    echo Candidate:
-                    echo %CANDIDATE_COLOR% - %CANDIDATE_CONTAINER% - port %CANDIDATE_PORT%
+                    echo ========================================
+                    echo CANDIDATE
+                    echo ========================================
+                    echo Color     : %CANDIDATE_COLOR%
+                    echo Container : %CANDIDATE_CONTAINER%
+                    echo Port      : %CANDIDATE_PORT%
 
                     echo.
                     echo Checking Docker network...
@@ -217,7 +225,7 @@ pipeline {
                     "%DOCKER_PATH%" rm -f %CANDIDATE_CONTAINER% 2>NUL
 
                     echo.
-                    echo Starting %CANDIDATE_COLOR% candidate...
+                    echo Starting candidate...
 
                     "%DOCKER_PATH%" run -d ^
                         --name %CANDIDATE_CONTAINER% ^
@@ -243,12 +251,18 @@ pipeline {
                 echo '========== CONTAINER VALIDATION =========='
 
                 bat '''
-                    "%DOCKER_PATH%" ps -a --filter "name=%CANDIDATE_CONTAINER%"
+                    echo Candidate container:
+
+                    "%DOCKER_PATH%" ps -a ^
+                        --filter "name=%CANDIDATE_CONTAINER%" ^
+                        --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
 
                     echo.
                     echo Candidate running state:
 
-                    "%DOCKER_PATH%" inspect -f "{{.State.Status}}" %CANDIDATE_CONTAINER%
+                    "%DOCKER_PATH%" inspect ^
+                        -f "{{.State.Status}}" ^
+                        %CANDIDATE_CONTAINER%
 
                     if errorlevel 1 (
                         echo ERROR: Candidate container validation failed
@@ -315,6 +329,11 @@ pipeline {
 
                     "%DOCKER_PATH%" network inspect %NETWORK%
 
+                    if errorlevel 1 (
+                        echo ERROR: Docker network validation failed
+                        exit /b 1
+                    )
+
                     echo.
                     echo Checking database connectivity from candidate...
 
@@ -341,21 +360,26 @@ pipeline {
                     echo BLUE-GREEN TRAFFIC SWITCH
                     echo ========================================
 
-                    echo Current:
-                    echo %CURRENT_COLOR% - %CURRENT_CONTAINER% - port %CURRENT_PORT%
+                    echo Current production:
+                    echo Color     : %CURRENT_COLOR%
+                    echo Container : %CURRENT_CONTAINER%
+                    echo Port      : %CURRENT_PORT%
 
                     echo.
                     echo Candidate:
-                    echo %CANDIDATE_COLOR% - %CANDIDATE_CONTAINER% - port %CANDIDATE_PORT%
+                    echo Color     : %CANDIDATE_COLOR%
+                    echo Container : %CANDIDATE_CONTAINER%
+                    echo Port      : %CANDIDATE_PORT%
 
                     echo.
-                    echo Candidate has passed all validations.
+                    echo Candidate passed:
+                    echo - Container validation
+                    echo - Health check
+                    echo - Application check
+                    echo - Database integration check
 
                     echo.
-                    echo Switching production to:
-                    echo %CANDIDATE_COLOR%
-                    echo Version: %APP_VERSION%
-                    echo Port: %CANDIDATE_PORT%
+                    echo Candidate is now the validated production slot.
 
                     echo.
                     echo Removing previous production container:
@@ -369,7 +393,12 @@ pipeline {
                     )
 
                     echo.
-                    echo BLUE-GREEN traffic switch completed.
+                    echo ========================================
+                    echo TRAFFIC SWITCH COMPLETED
+                    echo ========================================
+                    echo Active Color     : %CANDIDATE_COLOR%
+                    echo Active Container : %CANDIDATE_CONTAINER%
+                    echo Active Port      : %CANDIDATE_PORT%
                 '''
             }
         }
@@ -379,20 +408,23 @@ pipeline {
                 echo '========== DEPLOYMENT VERIFICATION =========='
 
                 bat '''
+                    echo Waiting for active production...
+
                     powershell -NoProfile -Command "Start-Sleep -Seconds 5"
 
+                    echo.
                     echo Checking active production health...
 
                     curl.exe --fail --silent --show-error ^
                         http://localhost:%CANDIDATE_PORT%/health
 
                     if errorlevel 1 (
-                        echo ERROR: New production health check failed
+                        echo ERROR: Active production health check failed
                         exit /b 1
                     )
 
                     echo.
-                    echo Active production:
+                    echo Active production container:
 
                     "%DOCKER_PATH%" ps ^
                         --filter "name=%CANDIDATE_CONTAINER%" ^
@@ -415,6 +447,10 @@ pipeline {
                     echo.
                     "%DOCKER_PATH%" ps -a ^
                         --filter "name=%CANDIDATE_CONTAINER%"
+
+                    echo.
+                    echo Active production color:
+                    echo %CANDIDATE_COLOR%
 
                     echo.
                     echo Active production port:
